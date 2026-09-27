@@ -1,0 +1,250 @@
+local RS = game:GetService("ReplicatedStorage")
+local RE = RS.Network.Towers.RE
+local Players = game:GetService("Players")
+local lp = Players.LocalPlayer
+
+local TOWER_ORDER = {
+	"Dragon Tower",
+	"Cursed Tower",
+	"Pirate Tower",
+	"Hidden Leaf Tower",
+	"Slayer Tower",
+	"Infinity Tower",
+}
+local MENU_WAIT = 5        
+local BATTLE_START_WAIT = 15 
+local ROUND_GAP = 1        
+
+local pg = lp.PlayerGui
+
+-- ===== Helper Functions for UI =====
+local function findPath(root, ...)
+	local cur = root
+	for i = 1, select("#", ...) do
+		if not cur then return nil end
+		local key = select(i, ...)
+		local ok, v = pcall(function() return cur:FindFirstChild(key) end)
+		if not ok then return nil end
+		cur = v
+	end
+	return cur
+end
+
+local function getRoot() return findPath(lp:FindFirstChild("PlayerGui"), "Root") end
+local function visible(inst) return pcall(function() return inst.Visible end) and inst.Visible == true end
+
+local function openTowersDirectly()
+	local root = getRoot()
+	if not root then return false end
+	local m = findPath(root, "Menus", "Towers")
+	if not m then return false end
+	
+	if not visible(m) then
+		pcall(function()
+			require(RS.Framework.Features.UI.MenuController).OpenMenu(m)
+		end)
+		task.wait(0.2)
+	end
+	
+	if not visible(m) then return false end
+	local sf = findPath(m, "Content", "ScrollingFrame")
+	pcall(function() sf.CanvasPosition = Vector2.new(0, 0) end)
+	task.wait(0.1)
+	return true
+end
+
+-- ===== Fixed Anti-AFK (VirtualInputManager Key Press) =====
+if CONFIG.ANTI_AFK then
+	local VIM = game:GetService("VirtualInputManager")
+	task.spawn(function()
+		while true do
+			task.wait(CONFIG.ANTI_AFK_INTERVAL)
+			pcall(function()
+				VIM:SendKeyEvent(true, Enum.KeyCode.W, false, game)
+				task.wait(0.1)
+				VIM:SendKeyEvent(false, Enum.KeyCode.W, false, game)
+			end)
+		end
+	end)
+	print("[FARM] Anti-AFK (Key Press) ON")
+end
+
+-- ===== Helpers =====
+local function waitFor(cond, timeout, step)
+	local waited = 0
+	while waited < timeout do
+		if cond() then return true end
+		task.wait(step or 0.2)
+		waited = waited + (step or 0.2)
+	end
+	return false
+end
+
+-- Press a GUI button through its real handlers (same as a human click).
+local function press(btn)
+	if not btn then return false end
+	local ok, conns = pcall(getconnections, btn.Activated)
+	if not ok or #conns == 0 then return false end
+	local fired = false
+	for _, cn in ipairs(conns) do
+		local okF = pcall(cn.Function, btn)
+		if okF then fired = true end
+	end
+	return fired
+end
+
+local function towersMenuVisible()
+	local mt = pg.Root.Menus:FindFirstChild("Towers")
+	return mt and mt.Visible
+end
+
+local function openTower(towerName)
+	if not openTowersDirectly() then
+		if not waitFor(towersMenuVisible, MENU_WAIT, 0.2) then return false end
+	end
+
+	local sf = pg.Root.Menus.Towers.Content:FindFirstChild("ScrollingFrame", true)
+	local playBtn
+	if sf then
+		for _, fr in ipairs(sf:GetChildren()) do
+			if fr:IsA("Frame") then
+				local t = fr:FindFirstChild("Title", true)
+				if t and t.Text == towerName then
+					playBtn = fr:FindFirstChild("Play", true)
+					break
+				end
+			end
+		end
+	end
+	if not playBtn then return false end
+
+	press(playBtn)
+	return waitFor(function()
+		local pm = pg.Root.Menus:FindFirstChild("PlayTower")
+		if not (pm and pm.Visible) then return false end
+		local top = pm:FindFirstChild("Banner", true) and pm:FindFirstChild("Banner", true):FindFirstChild("Top", true)
+		local lbl = top and top:FindFirstChildOfClass("TextLabel")
+		return lbl and lbl.Text == towerName
+	end, MENU_WAIT, 0.2)
+end
+
+local function equipBest()
+	local pm = pg.Root.Menus:FindFirstChild("PlayTower")
+	local btns = pm and pm.Content:FindFirstChild("Buttons", true)
+	if btns and btns:FindFirstChild("EquipBest") then
+		press(btns.EquipBest)
+	end
+	pcall(function() RE.EquipBestTowerTeam:FireServer() end)
+	task.wait(0.5) 
+end
+
+local function pressFight()
+	local pm = pg.Root.Menus:FindFirstChild("PlayTower")
+	local btns = pm and pm.Content:FindFirstChild("Buttons", true)
+	if btns and btns:FindFirstChild("Fight") then
+		return press(btns.Fight)
+	end
+	return false
+end
+
+local function battleVisible()
+	local tower = pg.Root:FindFirstChild("Tower")
+	local screen = tower and tower:FindFirstChild("Screen")
+	return screen and screen.Visible
+end
+
+local function currentFloor()
+	local tower = pg.Root:FindFirstChild("Tower")
+	local f = tower and tower:FindFirstChild("Floor", true)
+	return f and f.Text or ""
+end
+
+local function rewardsOpen()
+	local rew = pg.Root.Menus:FindFirstChild("TowerRewards")
+	return rew and rew.Visible
+end
+
+local function closeRewards()
+	local rew = pg.Root.Menus:FindFirstChild("TowerRewards")
+	if rew and rew.Visible then
+		local exit = rew:FindFirstChild("ExitButton", true)
+		press(exit)
+		task.wait(0.5) 
+	end
+end
+
+local function forceExitBattle()
+	local tower = pg.Root:FindFirstChild("Tower")
+	local screen = tower and tower:FindFirstChild("Screen")
+	local exitBtn = screen and screen:FindFirstChild("Exit", true)
+	press(exitBtn)
+end
+
+local function playRun(towerName)
+	closeRewards()
+	if battleVisible() then forceExitBattle() end
+	task.wait(0.3)
+
+	if not openTower(towerName) then
+		print("[FARM] " .. towerName .. ": tower menu did not open, counted as a round")
+		return "loss"
+	end
+
+	equipBest()
+	if not pressFight() then
+		print("[FARM] " .. towerName .. ": Fight button missing, counted as a round")
+		return "loss"
+	end
+
+	if not waitFor(function() return battleVisible() or rewardsOpen() end, BATTLE_START_WAIT, 0.2) then
+		print("[FARM] " .. towerName .. ": battle did not start, counted as a round")
+		return "loss"
+	end
+
+	local lastFloor = currentFloor()
+	local started = os.clock()
+	while true do
+		task.wait(0.3) 
+		local fl = currentFloor()
+		if fl ~= lastFloor then
+			print("[FARM] " .. towerName .. ": floor -> " .. fl)
+			lastFloor = fl
+		end
+		if not battleVisible() or rewardsOpen() then break end
+		if os.clock() - started > CONFIG.RUN_TIMEOUT then
+			forceExitBattle()
+			print("[FARM] " .. towerName .. ": run timed out, exited")
+			return "aborted"
+		end
+	end
+
+	task.wait(0.5) 
+	if rewardsOpen() then return "win" end
+	return "loss"
+end
+
+-- ===== Main: loop forever =====
+local cycle = 0
+while true do
+	cycle = cycle + 1
+	print("[FARM] === Cycle " .. cycle .. " started ===")
+	for _, towerName in ipairs(TOWER_ORDER) do
+		local rounds = CONFIG.TOWER_ROUNDS[towerName] or CONFIG.ROUNDS_PER_TOWER
+		local wins, losses, aborted = 0, 0, 0
+		print("[FARM] " .. towerName .. ": playing " .. rounds .. " rounds")
+		for round = 1, rounds do
+			local result = playRun(towerName)
+			if result == "win" then wins = wins + 1
+			elseif result == "loss" then losses = losses + 1
+			else aborted = aborted + 1 end
+			print(string.format("[FARM] %s round %d/%d -> %s (win=%d loss=%d aborted=%d)",
+				towerName, round, rounds, result, wins, losses, aborted))
+			task.wait(ROUND_GAP)
+		end
+		print(string.format("[FARM] Tower done: %s (win=%d loss=%d aborted=%d)",
+			towerName, wins, losses, aborted))
+	end
+	print("[FARM] === Cycle " .. cycle .. " complete ===")
+	if not CONFIG.LOOP_FOREVER then break end
+	print("[FARM] Restarting from Dragon Tower...")
+end
